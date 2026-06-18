@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Square Wave Phase Control</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin-top: 20px;
+        }
+
+        canvas {
+            border: 1px solid black;
+            margin-bottom: 20px;
+        }
+
+        .control {
+            width: 800px;
+        }
+
+        input[type="range"] {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas" width="1200" height="780"></canvas>
+
+    <div>
+    <span>
+    <button id="playButton">Play</button>
+    </span>
+    <span>
+    <button id="stopButton">Stop</button>
+    </span>
+    <span>
+    <button id="clearButton">Clear</button>
+    </span>
+    </div>
+
+
+    <div class="control">
+        <label for="shiftSlider">
+            shift: <span id="shiftValue">0</span> bits
+        </label>
+        <input
+            type="range"
+            id="shiftSlider"
+            min="0"
+            max="200"
+            step="0.1"
+            value="0"
+        >
+    </div>
+
+    <div class="control">
+        <label for="periodSlider">
+            period: <span id="periodValue">0</span> bits
+        </label>
+        <input
+            type="range"
+            id="periodSlider"
+            min="2"
+            max="200"
+            step="0.01"
+            value="64"
+        >
+    </div>
+
+    <div class="control">
+        <label for="dutySlider">
+            duty: <span id="dutyValue">0</span>%
+        </label>
+        <input
+            type="range"
+            id="dutySlider"
+            min="5"
+            max="95"
+            step="0.1"
+            value="50"
+        >
+    </div>
+
+    <div class="control">
+        <label for="popsizeSlider">
+            popsize: <span id="popsizeValue">0</span> bits
+        </label>
+        <input
+            type="range"
+            id="popsizeSlider"
+            min="1"
+            max="32"
+            value="32"
+        >
+    </div>
+
+    <div class="control">
+        <label for="itime_binsizeSlider">
+            itime_binsize: <span id="itime_binsizeValue">0</span>
+        </label>
+        <input
+            type="range"
+            id="itime_binsizeSlider"
+            min="10"
+            step="0.1"
+            max="200"
+            value="30"
+        >
+    </div>
+
+    <div class="control">
+        <label for="speedSlider">
+            speed: <span id="speedValue">0</span>
+        </label>
+        <input
+            type="range"
+            id="speedSlider"
+            min="0.1"
+            step="0.1"
+            max="3"
+            value="1"
+        >
+    </div>
+
+
+
+    <div><br></div>
+
+    <canvas id="canvas2" width="800" height="220"></canvas>
+    <canvas id="canvas3" width="800" height="220"></canvas>
+
+    <script>
+
+        const matplotlibColors = [
+            "#1f77b4", // blue
+            "#ff7f0e", // orange
+            "#2ca02c", // green
+            "#d62728", // red
+            "#9467bd", // purple
+            "#8c564b", // brown
+            "#e377c2", // pink
+            "#7f7f7f", // gray
+            "#bcbd22", // olive
+            "#17becf"  // cyan
+        ];
+
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+
+        const canvas2 = document.getElementById("canvas2");
+        const ctx2 = canvas2.getContext("2d");
+
+        const canvas3 = document.getElementById("canvas3");
+        const ctx3 = canvas3.getContext("2d");
+
+        // const phaseValue = document.getElementById("phaseValue");
+        const periodSlider = document.getElementById("periodSlider");
+        const popsizeSlider = document.getElementById("popsizeSlider");
+        const clearButton = document.getElementById("clearButton");
+        const dutySlider = document.getElementById("dutySlider");
+        const speedSlider = document.getElementById("speedSlider");
+        const itime_binsizeSlider = document.getElementById("itime_binsizeSlider");
+
+        const sym_pi  = "\u03C0"; //
+        const sym_phi = "\u03C6"; //
+
+        var radius = 3;
+        const scale_x_to_t = 1/(2*radius);
+
+
+        const max_no_itime_bins = 32;
+
+
+        var popsize = 32;
+
+        var total_tdl_len = Math.ceil(popsize*2.5);
+
+        var phase = 0;
+        var period  = 64;
+        var shift = 0;
+        var freq = 1.0;
+
+
+        var phi = 0;
+        var cphi = 0;
+
+        var itime = 0;
+
+        var duty = 50;
+
+        var speed = 1;
+
+        var itime_binsize = 10;
+
+
+        const cross2D_center_x = canvas.width/4;
+        const cross2D_center_y = 560;
+
+        const cross2D_center_x_R = canvas.width/4*3;
+
+
+        var IQa_trace  = new Set();
+        var IQb_trace  = new Set();
+        var IQab_trace = new Set();
+
+        // phi memory for rotation table
+        var itime_phi_mem = [];
+        var gap_centers   = [];
+        var rotations     = [];
+
+
+        for (let i = 0; i < max_no_itime_bins; i++) {
+            itime_phi_mem.push(new Set());
+            gap_centers.push(-10);
+            rotations.push(0);
+        }
+
+
+
+
+
+        function calc_cphi(){
+
+            const extra_rot = phi < gap_centers[itime];
+
+            cphi = phi + Math.PI + 2*Math.PI*( rotations[itime] + extra_rot);
+
+        }
+
+        function clear_trace_mem(){
+            IQa_trace.clear();
+            IQb_trace.clear();
+            IQab_trace.clear();
+            for (let i = 0; i < itime_phi_mem.length; i++) {
+                itime_phi_mem[i].clear();
+                gap_centers[i] = -10;
+                rotations[i]   =  0;
+            }
+        }
+
+
+        function drawCircle(ctx, x, y, radius, color) {
+            ctx.fillStyle = color;
+
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, 2 * Math.PI);
+            ctx.fill();
+            ctx.stroke();
+        }
+
+        function oscillator(t, freq,duty){
+
+
+                const period = 1/freq;
+                var norm_t = t/period;
+
+                if (norm_t < 0){
+                    norm_t += Math.ceil(-norm_t);
+                }
+                const yValue = (norm_t) % 1  <  (duty/100.) ? 1 : 0;
+
+                return yValue;
+
+        }
+
+        function hit_edge(t){
+
+
+                const yValue = t >= 0 ? 0 : 1;
+
+                return yValue;
+
+        }
+
+
+        // function drawSquareWave(phaseDegrees) {
+        function drawSquareWave() {
+            const width = canvas.width;
+            const height = canvas.height;
+
+
+
+            const wave_height = 160;
+
+            // Draw center line
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(0, wave_height);
+            ctx.lineTo(width, wave_height);
+            ctx.stroke();
+
+            const amplitude = 50;
+            const centerY = wave_height;
+
+            // const phase = phaseDegrees * Math.PI / 180;
+
+            ctx.strokeStyle = "black";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            let firstPoint = true;
+
+            for (let x = 0; x < width; x++) {
+
+
+                var t = (x- (2*radius*shift) ) * scale_x_to_t;
+
+
+                const y = centerY - amplitude * oscillator(t,freq,duty);
+
+                if (firstPoint) {
+                    ctx.moveTo(x, y);
+                    firstPoint = false;
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+
+            ctx.stroke();
+        }
+
+
+        function drawHitEdge() {
+            const width = canvas.width;
+            const height = canvas.height;
+
+
+
+            const wave_height = 60;
+
+            // Draw center line
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(0, wave_height);
+            ctx.lineTo(width, wave_height);
+            ctx.stroke();
+
+            const amplitude = 50;
+            const centerY = wave_height;
+
+
+            ctx.strokeStyle = "black";
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+
+            let firstPoint = true;
+
+            for (let x = 0; x < width; x++) {
+
+
+                var t = (x- (2*radius*shift) ) * scale_x_to_t;
+
+
+                const y = centerY - amplitude * hit_edge(t);
+
+                if (firstPoint) {
+                    ctx.moveTo(x, y);
+                    firstPoint = false;
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+
+            ctx.stroke();
+        }
+
+
+        function drawItimePops(){
+
+
+            var Itime_pop = 0;
+            const width = canvas.width;
+
+            var bin_spacing = itime_binsize*2*radius;
+
+
+            var ypos = 80;
+
+            // Draw center line
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(0, ypos);
+            ctx.lineTo(width, ypos);
+            ctx.stroke();
+
+            ctx.strokeStyle = "#000000";
+
+            var c = 0;
+            for (let x = bin_spacing; x < width; x+=bin_spacing) {
+
+
+                var t = (x- (2*radius*shift) ) * scale_x_to_t;
+
+
+
+
+                var waveY = hit_edge(t);
+
+                const fill_color = matplotlibColors[c+1 % matplotlibColors.length];
+
+                var color =  waveY > 0 ?  fill_color : "white";
+                drawCircle(ctx, x , ypos, radius*2, color);
+
+                var is_populated = waveY > 0;
+                if (is_populated){
+                  Itime_pop += 1;
+                }
+
+                c++;
+
+
+            }
+            itime = Itime_pop;
+
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "black";
+            ctx.fillText("itime pop: " + Itime_pop, width/2, ypos + 15);
+        }
+
+
+        function drawIQpops(){
+
+            ctx.strokeStyle = "#000000";
+
+            var I_a_pop = 0;
+            var Q_a_pop = 0;
+            var I_b_pop = 0;
+            var Q_b_pop = 0;
+
+            for (let i = 0; i<=total_tdl_len; i++ ){
+                xpos = radius + radius*2*i;
+
+                var ypos = 180;
+
+                var ystep = 30;
+
+                var t = (xpos- (2*radius*shift) ) * scale_x_to_t;
+
+                var waveY = oscillator(t,freq,duty);
+
+                var color =  waveY > 0 ?  "black" : "white";
+                drawCircle(ctx, xpos , ypos, radius, color);
+
+
+                ypos += ystep;
+
+                var start_i = 0;
+                var stop_i  = popsize;
+
+                if ( (i >= start_i) && (i<stop_i) ){
+                    var is_populated = waveY > 0;
+                    var color =  is_populated ?  "blue" : "white";
+                    if (is_populated){
+                      I_a_pop += 1;
+                    }
+                    drawCircle(ctx, xpos , ypos, radius, color);
+                }
+                if (i == stop_i){
+                    ctx.font = "16px Arial";
+                    ctx.fillStyle = "black";
+                    ctx.fillText("Ia pop: " + I_a_pop, xpos, ypos + radius);
+                }
+
+                var IQ_offset = Math.trunc(popsize/2);
+
+
+                ypos += ystep;
+
+                var start_i = IQ_offset;
+                var stop_i  = popsize + IQ_offset
+
+                if ( (i >= start_i) && (i<stop_i) ){
+                    var is_populated = waveY > 0;
+                    var color =  is_populated ?  "blue" : "white";
+                    if (is_populated){
+                      Q_a_pop += 1;
+                    }
+                    drawCircle(ctx, xpos , ypos, radius, color);
+                }
+                if (i == stop_i){
+                    ctx.font = "16px Arial";
+                    ctx.fillStyle = "black";
+                    ctx.fillText("Qa pop: " + Q_a_pop, xpos, ypos + radius);
+                }
+
+                ypos += ystep;
+
+                var start_i = popsize;
+                var stop_i  = 2*popsize;
+
+                if ( (i >= start_i) && (i<stop_i) ){
+                    var is_populated = waveY > 0;
+                    var color =  is_populated ?  "orange" : "white";
+                    if (is_populated){
+                      I_b_pop += 1;
+                    }
+                    drawCircle(ctx, xpos , ypos, radius, color);
+                }
+                if (i == stop_i){
+                    ctx.font = "16px Arial";
+                    ctx.fillStyle = "black";
+                    ctx.fillText("Ib pop: " + I_b_pop, xpos, ypos + radius);
+                }
+
+
+
+                ypos += ystep;
+
+                var start_i = popsize + IQ_offset;
+                var stop_i  = 2*popsize + IQ_offset
+
+                if ( (i >= start_i) && (i<stop_i) ){
+                    var is_populated = waveY > 0;
+                    var color =  is_populated ?  "orange" : "white";
+                    if (is_populated){
+                      Q_b_pop += 1;
+                    }
+                    drawCircle(ctx, xpos , ypos, radius, color);
+                }
+                if (i == stop_i){
+                    ctx.font = "16px Arial";
+                    ctx.fillStyle = "black";
+                    ctx.fillText("Qb pop: " + Q_b_pop, xpos, ypos + radius);
+                }
+
+            }
+
+
+
+
+            ctx.strokeStyle = "#000000";
+
+            var xpos = cross2D_center_x + I_a_pop * 2*radius;
+            var ypos = cross2D_center_y - Q_a_pop * 2*radius;
+            var color = "blue";
+            drawCircle(ctx, xpos , ypos, radius, color);
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "black";
+            ctx.fillText("IQa", xpos+2*radius, ypos + radius);
+
+            var xpos = cross2D_center_x + I_b_pop * 2*radius;
+            var ypos = cross2D_center_y - Q_b_pop * 2*radius;
+            var color = "orange";
+            drawCircle(ctx, xpos , ypos, radius, color);
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "black";
+            ctx.fillText("IQb", xpos+2*radius, ypos + radius);
+
+
+
+
+            // IQab
+            const I_ab = (I_a_pop - I_b_pop);
+            const Q_ab = (Q_a_pop - Q_b_pop);
+            var xpos = cross2D_center_x + I_ab * 2*radius;
+            var ypos = cross2D_center_y - Q_ab * 2*radius;
+
+            // draw the pointer
+            ctx.strokeStyle = "#000000";
+            ctx.beginPath();
+            ctx.moveTo(cross2D_center_x, cross2D_center_y);
+            ctx.lineTo(xpos,ypos);
+            ctx.stroke();
+
+            // draw the datapoint
+            var color = "green";
+            drawCircle(ctx, xpos , ypos, radius, color);
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "black";
+            ctx.fillText("IQa - IQb", xpos+2*radius, ypos + radius);
+
+
+            phi = Math.atan2(Q_ab,I_ab);
+
+            // draw the phi angle
+            ctx.beginPath();
+            if (phi >= 0){
+                ctx.arc(cross2D_center_x, cross2D_center_y, 32, -phi,0);
+            } else {
+                ctx.arc(cross2D_center_x, cross2D_center_y, 32, 0,-phi);
+            }
+            // ctx.fill();
+            ctx.stroke();
+
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "black";
+            ctx.fillText(sym_phi, cross2D_center_x+12, phi >= 0 ? cross2D_center_y-5 : cross2D_center_y +12);
+
+            // debug output
+            // ctx.font = "16px Arial";
+            // ctx.fillStyle = "black";
+            // ctx.fillText(phi, 400, 400);
+
+
+
+
+
+
+            var new_entry_a = String(I_a_pop)+","+String(Q_a_pop);
+            IQa_trace.add( new_entry_a );
+
+            var new_entry_b = String(I_b_pop)+","+String(Q_b_pop);
+            IQb_trace.add( new_entry_b );
+
+            if (IQa_trace.has(new_entry_b)){
+                IQa_trace.delete(new_entry_b);
+            }
+            if (IQb_trace.has(new_entry_a)){
+                IQb_trace.delete(new_entry_a);
+            }
+
+
+
+            IQab_trace.add( String(I_a_pop - I_b_pop)+","+String(Q_a_pop - Q_b_pop) );
+
+            itime_phi_mem[itime].add(phi);
+
+
+
+
+        }
+
+
+
+
+        function clear_canvas(){
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            }
+
+
+        function clear_canvas2(){
+            ctx2.clearRect(0, 0, canvas2.width, canvas2.height);
+
+            // Draw dividing line
+            ctx2.strokeStyle = "#cccccc";
+            ctx2.beginPath();
+            ctx2.moveTo(0, canvas2.height/2);
+            ctx2.lineTo(canvas2.width, canvas2.height/2);
+            ctx2.stroke();
+
+            ctx2.strokeStyle = "#cccccc";
+            ctx2.beginPath();
+            ctx2.moveTo(0, canvas2.height/2-100);
+            ctx2.lineTo(canvas2.width, canvas2.height/2 - 100);
+            ctx2.stroke();
+
+            ctx2.strokeStyle = "#cccccc";
+            ctx2.beginPath();
+            ctx2.moveTo(0, canvas2.height/2+100);
+            ctx2.lineTo(canvas2.width, canvas2.height/2 + 100);
+            ctx2.stroke();
+
+
+            ctx2.font = "16px Arial";
+            ctx2.fillStyle = "black";
+            ctx2.fillText(sym_phi, 10,canvas2.height/2-100+15);
+
+            ctx2.font = "16px Arial";
+            ctx2.fillStyle = "black";
+            ctx2.fillText(sym_pi, 760,canvas2.height/2-100+15);
+
+            ctx2.font = "16px Arial";
+            ctx2.fillStyle = "black";
+            ctx2.fillText("-"+sym_pi, 760,canvas2.height/2+100-10);
+
+            ctx2.font = "16px Arial";
+            ctx2.fillStyle = "black";
+            ctx2.fillText("shift", 760,canvas2.height/2+15);
+        }
+
+        function clear_canvas3(){
+            ctx3.clearRect(0, 0, canvas3.width, canvas3.height);
+
+            // Draw dividing line
+            ctx3.strokeStyle = "#cccccc";
+            ctx3.beginPath();
+            ctx3.moveTo(0, canvas3.height/2);
+            ctx3.lineTo(canvas3.width, canvas3.height/2);
+            ctx3.stroke();
+
+            ctx3.strokeStyle = "#cccccc";
+            ctx3.beginPath();
+            ctx3.moveTo(0, canvas3.height/2-100);
+            ctx3.lineTo(canvas3.width, canvas3.height/2 - 100);
+            ctx3.stroke();
+
+            ctx3.strokeStyle = "#cccccc";
+            ctx3.beginPath();
+            ctx3.moveTo(0, canvas3.height/2+100);
+            ctx3.lineTo(canvas3.width, canvas3.height/2 + 100);
+            ctx3.stroke();
+
+
+            ctx3.font = "16px Arial";
+            ctx3.fillStyle = "black";
+            ctx3.fillText("continuous "+sym_phi, 10,canvas3.height/2-100+15);
+
+            // ctx3.font = "16px Arial";
+            // ctx3.fillStyle = "black";
+            // ctx3.fillText(sym_pi, 760,canvas3.height/2-100+15);
+            //
+            // ctx3.font = "16px Arial";
+            // ctx3.fillStyle = "black";
+            // ctx3.fillText("-"+sym_pi, 760,canvas3.height/2+100-10);
+
+            ctx3.font = "16px Arial";
+            ctx3.fillStyle = "black";
+            ctx3.fillText("shift", 760,canvas3.height/2+15);
+        }
+
+        var last_phi;
+        var last_shift;
+
+        function draw_phi_graph(){
+
+            const scale_shift_to_x = 4;
+            const scale_phi_to_y = 100/Math.PI;
+
+            const phi_graph_y_center = canvas2.height/2;
+
+            ctx2.strokeStyle = "green";
+
+            if ((last_phi !== undefined ) && (last_shift !== undefined)) {
+                if (shift > last_shift){
+
+                    const xa = last_shift * scale_shift_to_x;
+                    const ya = phi_graph_y_center - last_phi   * scale_phi_to_y;
+                    const xb = shift      * scale_shift_to_x;
+                    const yb = phi_graph_y_center - phi        * scale_phi_to_y;
+
+                    ctx2.beginPath();
+                    ctx2.moveTo(xa,ya);
+                    ctx2.lineTo(xb,yb);
+                    ctx2.stroke();
+                }
+
+            }
+
+            last_phi = phi;
+            last_shift = shift;
+        }
+
+
+
+
+
+        var last_cphi;
+        var last_cphi_shift;
+
+        function draw_cphi_graph(){
+
+            const scale_shift_to_x = 4;
+            const scale_phi_to_y = 20/Math.PI;
+
+            const phi_graph_y_center = canvas3.height-20;
+
+
+            ctx3.strokeStyle = "purple";
+
+            if ((last_cphi !== undefined ) && (last_cphi_shift !== undefined)) {
+                if (shift > last_cphi_shift){
+
+                    const xa = last_cphi_shift * scale_shift_to_x;
+                    const ya = phi_graph_y_center - last_cphi   * scale_phi_to_y;
+                    const xb = shift      * scale_shift_to_x;
+                    const yb = phi_graph_y_center - cphi        * scale_phi_to_y;
+
+                    ctx3.beginPath();
+                    ctx3.moveTo(xa,ya);
+                    ctx3.lineTo(xb,yb);
+                    ctx3.stroke();
+                }
+
+            }
+
+            last_cphi = cphi;
+            last_cphi_shift = shift;
+        }
+
+
+        function draw_IQ_memory_traces(){
+
+
+
+            ctx.strokeStyle = "#cccccc";
+
+            for (const entry of IQa_trace) {
+                var pos = entry.split(",");
+                var xpos = cross2D_center_x + pos[0] * 2*radius;
+                var ypos = cross2D_center_y - pos[1] * 2*radius;
+                var color = "#ccccee";
+                drawCircle(ctx, xpos , ypos, radius, color);
+            }
+
+
+            for (const entry of IQb_trace) {
+                var pos = entry.split(",");
+                var xpos = cross2D_center_x + pos[0] * 2*radius;
+                var ypos = cross2D_center_y - pos[1] * 2*radius;
+                var color = "#eeeecc";
+                drawCircle(ctx, xpos , ypos, radius, color);
+
+            }
+
+            for (const entry of IQab_trace) {
+                var pos = entry.split(",");
+                var xpos = cross2D_center_x + pos[0]  * 2*radius;
+                var ypos = cross2D_center_y - pos[1]  * 2*radius;
+                var color = "#cceecc";
+                drawCircle(ctx, xpos , ypos, radius, color);
+            }
+
+        }
+
+
+        function draw_rotations_diagram_cross(){
+            // Draw Phi diagram base line
+            const cross_height = 400;
+
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(cross2D_center_x_R, cross2D_center_y+cross_height/2);
+            ctx.lineTo(cross2D_center_x_R, cross2D_center_y-cross_height/2);
+            ctx.stroke();
+
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(cross2D_center_x_R-200, cross2D_center_y+cross_height/2);
+            ctx.lineTo(cross2D_center_x_R-200, cross2D_center_y-cross_height/2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(cross2D_center_x_R+200, cross2D_center_y+cross_height/2);
+            ctx.lineTo(cross2D_center_x_R+200, cross2D_center_y-cross_height/2);
+            ctx.stroke();
+
+            ctx.font = "16px Arial";
+            ctx.fillStyle = "black";
+            ctx.fillText("0", cross2D_center_x_R+5,cross2D_center_y +160+15);
+            ctx.fillText("-"+sym_pi, cross2D_center_x_R-200,cross2D_center_y +160+15);
+            ctx.fillText("+"+sym_pi, cross2D_center_x_R+200,cross2D_center_y +160+15);
+            ctx.fillText(sym_phi,  cross2D_center_x_R+250,cross2D_center_y +160+15);
+
+            var c = 0;
+            for (let i = 0; i<340; i+=1.7*itime_binsize ){
+
+                const ypos = cross2D_center_y +160 -i
+                ctx.strokeStyle = "#cccccc";
+                ctx.beginPath();
+                ctx.moveTo(canvas.width/2, ypos);
+                ctx.lineTo(canvas.width,   ypos);
+                ctx.stroke();
+
+                ctx.font = "16px Arial";
+                ctx.fillStyle = "black";
+                ctx.fillText("itime = "+c, cross2D_center_x_R-270,ypos);
+                c++;
+            }
+        }
+
+
+        var last_itime = 0;
+
+
+        function calc_gap_center(index){
+
+            // sort
+            const arr = Array.from(itime_phi_mem[index]).sort((a, b) => a - b);
+
+            var diff = []
+            // difference
+            const size = arr.length;
+            for (let i = 0; i < size; i++) {
+                const distance = arr[i] - arr[(size+i-1)%size  ];
+                const dist_on_ring = (distance+2*Math.PI)%(2*Math.PI);
+                diff.push( dist_on_ring );
+            }
+
+
+            const cluster_begin = diff.indexOf(Math.max(...diff));
+
+            const max_dist = diff[cluster_begin];
+
+            const gap_center = (arr[cluster_begin] - max_dist/2 + 3*Math.PI)%(2*Math.PI) - Math.PI;
+
+
+
+            gap_centers[index] = gap_center;
+
+            const last_gap_center = index > 0 ? gap_centers[index-1] : -10;
+
+            const rotation_happened = gap_center < last_gap_center;
+
+            rotations[index] = index > 0 ? rotations[index-1] + rotation_happened : 0;
+
+            // console.log("gap center for index "+index);
+            //
+            // console.log(rotations);
+
+
+        }
+
+        function draw_rotations_diagram(){
+
+
+            const scale_phi_to_x = 200/Math.PI;
+            const scale_itime_to_y = 1.7*itime_binsize;
+
+            const base_y = cross2D_center_y + 160;
+
+            var xpos = cross2D_center_x_R + phi*scale_phi_to_x ;
+            var ypos = base_y - itime*scale_itime_to_y ;
+
+            const color = matplotlibColors[itime % matplotlibColors.length];
+            ctx.strokeStyle = color;
+            const data_radius = 2;
+            drawCircle(ctx, xpos , ypos, data_radius, color);
+
+            // itime has increased, time to calc the gap center
+            if (itime != last_itime){
+                calc_gap_center(last_itime);
+                var xpos = cross2D_center_x_R + gap_centers[last_itime]*scale_phi_to_x ;
+                var ypos = base_y - last_itime*scale_itime_to_y ;
+                ctx.strokeStyle = "black";
+                drawCircle(ctx, xpos , ypos, radius, "black");
+
+            }
+
+            last_itime = itime;
+
+        }
+
+        function draw_misc(){
+
+
+            const line_height = 330;
+
+            // Draw dividing line
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(0, line_height);
+            ctx.lineTo(canvas.width, line_height);
+            ctx.stroke();
+
+
+            // Draw 2D coordinate cross
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(0, cross2D_center_y);
+            ctx.lineTo(canvas.width/2, cross2D_center_y);
+            ctx.stroke();
+
+            const cross_height = 400;
+            ctx.strokeStyle = "#cccccc";
+            ctx.beginPath();
+            ctx.moveTo(cross2D_center_x, cross2D_center_y+cross_height/2);
+            ctx.lineTo(cross2D_center_x, cross2D_center_y-cross_height/2);
+            ctx.stroke();
+
+
+
+            ctx.strokeStyle = "#000000";
+
+        }
+
+
+
+        function clear_and_update(){
+            clear_trace_mem();
+            clear_canvas2();
+            clear_canvas3();
+            clear_canvas();
+            update();
+            draw_rotations_diagram_cross();
+
+        }
+
+
+        function update_speed() {
+            if (animationTimer !== null) {
+                play();
+            }
+
+        }
+
+
+
+
+
+        function update() {
+            // phase = Number(phaseSlider.value);
+            // phaseValue.textContent = phase;
+
+            const waveform_box_height = 320;
+            const IQ_plane_height     = 500;
+            ctx.clearRect(0, 0, canvas.width, waveform_box_height);
+            ctx.clearRect(0, waveform_box_height, canvas.width/2, IQ_plane_height);
+
+            shift = Number(shiftSlider.value);
+            shiftValue.textContent = shift;
+
+            period = Number(periodSlider.value);
+            periodValue.textContent = period;
+
+            popsize = Number(popsizeSlider.value);
+            popsizeValue.textContent = popsize;
+
+            duty = Number(dutySlider.value);
+            dutyValue.textContent = duty;
+
+            speed = Number(speedSlider.value);
+            speedValue.textContent = speed;
+
+            itime_binsize = Number(itime_binsizeSlider.value);
+            itime_binsizeValue.textContent = itime_binsize;
+
+            freq = 1/period;
+            total_tdl_len = Math.ceil(popsize*2.5);
+
+
+
+
+            drawSquareWave(phase);
+            drawHitEdge();
+
+            draw_misc();
+
+            draw_IQ_memory_traces();
+            drawIQpops();
+            drawItimePops();
+
+            draw_rotations_diagram();
+
+
+            draw_phi_graph();
+
+            calc_cphi();
+            draw_cphi_graph();
+
+            // debug output
+            // ctx.font = "16px Arial";
+            // ctx.fillStyle = "black";
+            // ctx.fillText(IQa_trace.size, 400, 400);
+
+
+
+
+        }
+
+        // phaseSlider.addEventListener("input", update);
+        shiftSlider.addEventListener("input", update);
+        periodSlider.addEventListener("input", clear_and_update);
+        popsizeSlider.addEventListener("input", clear_and_update);
+        dutySlider.addEventListener("input", clear_and_update);
+
+        clearButton.addEventListener("click", clear_and_update);
+
+        speedSlider.addEventListener("input", update_speed);
+        itime_binsizeSlider.addEventListener("input", clear_and_update);
+
+
+
+        let animationTimer = null;
+
+        function play() {
+            // Stop any existing animation
+            stop();
+
+            // Start from zero
+            // shiftSlider.value = shiftSlider.min;
+
+            // Redraw graph
+            update();
+
+            var millis_per_frame = 10.0 /speed;
+
+            animationTimer = setInterval(() => {
+
+                const step = parseFloat(shiftSlider.step);
+                const max  = parseFloat(shiftSlider.max);
+                const period  = parseFloat(periodSlider.value);
+                let value  = parseFloat(shiftSlider.value);
+
+                value += step;
+
+                // jump back after the biggest multiple of period
+                // that can be reached on the shift slider
+                // var stop = Math.floor(max/period) * period;
+                var stop = max;
+
+                if (value > stop) {
+                    value = parseFloat(shiftSlider.min);
+                    clear_canvas2();
+                    clear_canvas3();
+                }
+
+                shiftSlider.value = value;
+
+                // Trigger graph update
+                update();
+
+            }, millis_per_frame); // milliseconds between frames
+        }
+
+        function stop() {
+            if (animationTimer !== null) {
+                clearInterval(animationTimer);
+                animationTimer = null;
+            }
+        }
+
+        document
+            .getElementById("playButton")
+            .addEventListener("click", play);
+
+        document
+            .getElementById("stopButton")
+            .addEventListener("click", stop);
+
+        clear_and_update();
+        //update();
+
+
+    </script>
+
+</body>
+</html>
